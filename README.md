@@ -184,3 +184,9 @@ covered by an injected recording client; application modules are not mocked.
 ## License
 
 MIT
+
+## Documentation
+
+- [Concepts](docs/concepts.md) — verdicts, deterministic-first hierarchy, fail-closed admission, config versioning.
+- [failures.yaml reference](docs/failures-reference.md) — every detection rule kind, field addressing, and the audit-table import format.
+- [Langfuse guide](docs/langfuse-guide.md) — credentials, the pull/score/push loop, and what appears in your Langfuse UI.
