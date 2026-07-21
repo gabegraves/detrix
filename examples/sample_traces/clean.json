@@ -1,0 +1,19 @@
+{
+  "trace": {
+    "id": "clean",
+    "input": "Run the tests and report the result",
+    "output": "Complete: all tests passing",
+    "metadata": {"fixture": true}
+  },
+  "observations": [
+    {
+      "id": "clean-shell",
+      "trace_id": "clean",
+      "name": "shell",
+      "level": "DEFAULT",
+      "input": "pytest -q",
+      "output": "12 passed",
+      "metadata": {"exit_code": 0}
+    }
+  ]
+}

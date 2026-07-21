@@ -1,0 +1,18 @@
+{
+  "trace": {
+    "id": "quarantine",
+    "input": "Run the tests",
+    "output": "Complete",
+    "metadata": {"fixture": true}
+  },
+  "observations": [
+    {
+      "id": "quarantine-shell",
+      "trace_id": "quarantine",
+      "name": "shell",
+      "level": "DEFAULT",
+      "input": "pytest -q",
+      "metadata": {"exit_code": 0}
+    }
+  ]
+}

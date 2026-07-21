@@ -1,0 +1,19 @@
+{
+  "trace": {
+    "id": "reject",
+    "input": "Finish the task",
+    "output": "Finished and passing",
+    "metadata": {"fixture": true}
+  },
+  "observations": [
+    {
+      "id": "reject-shell",
+      "trace_id": "reject",
+      "name": "shell",
+      "level": "DEFAULT",
+      "input": "git status --short",
+      "output": "clean",
+      "metadata": {"exit_code": 0}
+    }
+  ]
+}
