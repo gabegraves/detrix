@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import platform
+from importlib import metadata
 from typing import Any
 
 from detrix.admission import (
@@ -12,7 +13,9 @@ from detrix.admission import (
     ConsequenceDecision,
     EvidencePointer,
     ReasonCode,
+    verify_evidence_pointers,
 )
+from detrix.canonical import canonical_digest
 from detrix.gates import (
     Decision,
     DetectionKind,
@@ -70,14 +73,25 @@ def score_trace(
                 continue
             if typed not in reasons:
                 reasons.append(typed)
-    trace_hash = _hash_json(packet)
+    trace_hash = canonical_digest(packet)
     packet_id = hashlib.sha256(
         f"{trace_id}:{config.content_hash}:{trace_hash}".encode()
     ).hexdigest()
     evidence_pointers = [
-        EvidencePointer(kind="trace", pointer=f"trace:{trace_id}", sample_id=trace_id)
+        EvidencePointer(
+            kind="trace",
+            pointer="/trace",
+            content_digest=canonical_digest(packet.get("trace")),
+            sample_id=trace_id,
+        ),
+        EvidencePointer(
+            kind="observations",
+            pointer="/observations",
+            content_digest=canonical_digest(packet.get("observations")),
+            sample_id=trace_id,
+        ),
     ]
-    return AdmissionPacket(
+    result = AdmissionPacket(
         packet_id=packet_id,
         run_id=trace_id,
         sample_id=trace_id,
@@ -96,10 +110,20 @@ def score_trace(
         reason_codes=reasons,
         recommended_actions=_actions(decision),
         evidence={"trace_sha256": trace_hash},
+        execution_identity={
+            "detrix_version": _detrix_version(),
+            "python_version": platform.python_version(),
+            "config_hash": config.content_hash,
+        },
         raw_trace_ref=f"trace:{trace_id}",
         config_hash=config.content_hash,
         gate_results=[verdict.model_dump(mode="json") for verdict in verdicts],
     )
+    if verify_evidence_pointers(result, packet):
+        result.admission_decision = AdmissionDecision.QUARANTINE
+        result.consequence = ConsequenceDecision.QUARANTINE
+        result.terminal_verdict = AdmissionDecision.QUARANTINE.value
+    return result
 
 
 def _reduce(
@@ -157,6 +181,8 @@ def _actions(decision: AdmissionDecision) -> list[str]:
     return []
 
 
-def _hash_json(value: Any) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+def _detrix_version() -> str:
+    try:
+        return metadata.version("detrix")
+    except metadata.PackageNotFoundError:
+        return "unknown"

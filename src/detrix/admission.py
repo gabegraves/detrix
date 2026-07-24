@@ -7,7 +7,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ADMISSION_PACKET_SCHEMA_VERSION = 1
+from detrix.canonical import canonical_digest
+
+ADMISSION_PACKET_SCHEMA_VERSION = 2
 EvidenceClass = Literal["observed", "model_inferred", "prior_inferred", "unidentifiable"]
 
 
@@ -38,6 +40,7 @@ class TrainingEligibility(BaseModel):
 class EvidencePointer(BaseModel):
     kind: str
     pointer: str
+    content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     sample_id: str | None = None
     file_id: str | None = None
     endpoint: str | None = None
@@ -54,6 +57,7 @@ class ReasonCode(StrEnum):
     ADVISORY_ONLY = "ADVISORY_ONLY"
     NO_AUTHORITATIVE_GATES = "NO_AUTHORITATIVE_GATES"
     REPLAY_REQUIRED = "REPLAY_REQUIRED"
+    EVIDENCE_INTEGRITY = "EVIDENCE_INTEGRITY"
 
 
 class AdmissionPacket(BaseModel):
@@ -94,3 +98,45 @@ class AdmissionPacket(BaseModel):
     config_hash: str
     gate_results: list[dict[str, Any]] = Field(default_factory=list)
 
+
+def verify_evidence_pointers(packet: AdmissionPacket, trace: dict) -> list[str]:
+    """Verify packet evidence pointers against the scored trace."""
+
+    failures: list[str] = []
+    for evidence_pointer in packet.evidence_pointers:
+        pointer = evidence_pointer.pointer
+        try:
+            value = _resolve_pointer(trace, pointer)
+        except (IndexError, KeyError, TypeError, ValueError):
+            failures.append(f"unresolvable_pointer:{pointer}")
+            continue
+        if canonical_digest(value) != evidence_pointer.content_digest:
+            failures.append(f"digest_mismatch:{pointer}")
+
+    if failures:
+        packet.joinable = False
+        packet.joinability = {
+            **packet.joinability,
+            "joinable": False,
+            "evidence_pointer_failures": failures,
+        }
+        if ReasonCode.EVIDENCE_INTEGRITY not in packet.reason_codes:
+            packet.reason_codes.append(ReasonCode.EVIDENCE_INTEGRITY)
+    return failures
+
+
+def _resolve_pointer(value: Any, pointer: str) -> Any:
+    if not pointer.startswith("/") or pointer == "/":
+        raise ValueError(pointer)
+    current = value
+    for raw_token in pointer[1:].split("/"):
+        token = raw_token.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict):
+            current = current[token]
+        elif isinstance(current, list):
+            if not token.isdigit():
+                raise ValueError(pointer)
+            current = current[int(token)]
+        else:
+            raise TypeError(pointer)
+    return current
