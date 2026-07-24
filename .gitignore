@@ -12,3 +12,8 @@ dist/
 .dolt/
 *.db
 .beads-credential-key
+
+# agent-session exhaust
+.omc/
+.omx/
+.deploy-evidence/
