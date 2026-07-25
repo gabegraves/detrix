@@ -198,6 +198,13 @@ def report() -> None:
     click.echo("Would-have verdict counts")
     for decision in ("ADMIT", "REJECT", "SUPPORT_ONLY", "QUARANTINE"):
         click.echo(f"  {decision}: {counts[decision]}")
+    covered = counts["ADMIT"] + counts["REJECT"]
+    abstained = counts["SUPPORT_ONLY"] + counts["QUARANTINE"]
+    abstained_share = abstained / len(packets) if packets else 0
+    click.echo("Coverage boundary")
+    click.echo(f"  covered (ADMIT+REJECT): {covered}")
+    click.echo(f"  abstained (SUPPORT_ONLY+QUARANTINE): {abstained}")
+    click.echo(f"  abstained share: {abstained_share:.1%} of {len(packets)} scored traces")
     hits: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     offenders: list[tuple[int, str]] = []
     for packet in packets:

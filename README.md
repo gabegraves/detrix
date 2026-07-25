@@ -94,6 +94,11 @@ failures:
       prompt: Does the final answer reference file paths never seen in tool outputs?
 ```
 
+Deterministic rejection guarantees hold only within the rule set configured in
+`failures.yaml`. Anything outside that boundary is not covered: it must abstain as
+`SUPPORT_ONLY` or `QUARANTINE`, or be hardened into a deterministic rule before it can support
+a deterministic rejection.
+
 Rules describe failure conditions. `present_pattern` fires when its regex appears.
 `absent_pattern` fires when its regex does not appear; `when_pattern` can restrict that check to
 traces that make a completion claim. The closed authoritative rule set is:

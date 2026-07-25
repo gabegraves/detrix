@@ -157,6 +157,56 @@ def test_score_and_report_use_real_sqlite_store() -> None:
         assert "prevented" not in report_result.output.lower()
 
 
+def test_report_shows_covered_and_abstained_share_for_mixed_store() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("failures.yaml").write_text(REJECT_ON_OUTPUT)
+        store = Store()
+        store.upsert_trace(_trace("clean", "good"))
+        store.upsert_trace(_trace("bad", "bad result"))
+        store.upsert_trace(
+            {
+                "trace": {"id": "missing", "input": "", "metadata": {}},
+                "observations": [],
+            }
+        )
+        assert runner.invoke(main, ["score"]).exit_code == 0
+
+        result = runner.invoke(main, ["report"])
+
+        assert result.exit_code == 0, result.output
+        assert "Coverage boundary" in result.output
+        assert "covered (ADMIT+REJECT): 2" in result.output
+        assert "abstained (SUPPORT_ONLY+QUARANTINE): 1" in result.output
+        assert "abstained share: 33.3% of 3 scored traces" in result.output
+
+
+def test_report_shows_all_advisory_config_as_fully_abstained() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("failures.yaml").write_text(
+            """failures:
+  - id: manual-review
+    description: manual review needed
+    severity: medium
+    detection:
+      kind: advisory
+      prompt: Review this trace
+"""
+        )
+        store = Store()
+        store.upsert_trace(_trace("first", "good"))
+        store.upsert_trace(_trace("second", "also good"))
+        assert runner.invoke(main, ["score"]).exit_code == 0
+
+        result = runner.invoke(main, ["report"])
+
+        assert result.exit_code == 0, result.output
+        assert "covered (ADMIT+REJECT): 0" in result.output
+        assert "abstained (SUPPORT_ONLY+QUARANTINE): 2" in result.output
+        assert "abstained share: 100.0% of 2 scored traces" in result.output
+
+
 def test_commands_honor_configured_failure_and_store_paths() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
