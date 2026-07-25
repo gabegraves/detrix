@@ -75,6 +75,7 @@ def test_store_rejects_symlinked_parent_without_chmod_follow(tmp_path: Path) -> 
 def test_config_change_appends_replay_event_without_rewriting_verdict(tmp_path: Path) -> None:
     store = Store(tmp_path / ".detrix" / "store.db")
     raw = trace()
+    store.upsert_trace(raw)
     old = score_trace(raw, gate("secret"))
     new = score_trace(raw, gate("forbidden"))
     assert store.save_verdict(old) is True
@@ -99,9 +100,13 @@ def test_config_change_appends_replay_event_without_rewriting_verdict(tmp_path: 
 def test_changed_trace_content_supersedes_same_config_verdict(tmp_path: Path) -> None:
     store = Store(tmp_path / ".detrix" / "store.db")
     config = gate("bad")
-    first = score_trace(trace(output="good"), config)
-    second = score_trace(trace(output="bad"), config)
+    first_raw = trace(output="good")
+    second_raw = trace(output="bad")
+    store.upsert_trace(first_raw)
+    first = score_trace(first_raw, config)
     assert store.save_verdict(first) is True
+    store.upsert_trace(second_raw)
+    second = score_trace(second_raw, config)
     assert store.save_verdict(second) is True
     assert first.packet_id != second.packet_id
     rows = store.list_verdicts()
@@ -114,6 +119,7 @@ def test_changed_trace_content_supersedes_same_config_verdict(tmp_path: Path) ->
 def test_config_reversion_becomes_current_without_rewriting_history(tmp_path: Path) -> None:
     store = Store(tmp_path / ".detrix" / "store.db")
     raw = trace(output="secret")
+    store.upsert_trace(raw)
     config_a = gate("secret")
     config_b = gate("forbidden")
     assert store.save_verdict(score_trace(raw, config_a)) is True
@@ -139,10 +145,14 @@ def test_interrupted_config_replay_stales_unrescored_traces(tmp_path: Path) -> N
     config_a = gate("secret")
     config_b = gate("forbidden")
     for trace_id in ("trace-1", "trace-2"):
-        store.save_verdict(score_trace(trace(trace_id, "clean"), config_a))
+        raw = trace(trace_id, "clean")
+        store.upsert_trace(raw)
+        store.save_verdict(score_trace(raw, config_a))
 
     store.activate_config(config_b.content_hash)
-    store.save_verdict(score_trace(trace("trace-1", "clean"), config_b))
+    rescored = trace("trace-1", "clean")
+    store.upsert_trace(rescored)
+    store.save_verdict(score_trace(rescored, config_b))
 
     rows = {row["trace_id"]: row for row in store.list_verdicts(latest_only=True)}
     assert rows["trace-1"]["config_hash"] == config_b.content_hash
@@ -176,6 +186,14 @@ def test_trace_snapshot_upsert_is_idempotent(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as connection:
         count = connection.execute("SELECT COUNT(*) FROM trace_snapshots").fetchone()[0]
     assert count == 1
+
+
+def test_save_verdict_requires_matching_trace_snapshot(tmp_path: Path) -> None:
+    store = Store(tmp_path / ".detrix" / "store.db")
+    packet = score_trace(trace(), gate("secret"))
+
+    with pytest.raises(StoreError, match=f"no trace snapshot for verdict {packet.packet_id}"):
+        store.save_verdict(packet)
 
 
 def test_config_snapshot_round_trips_to_its_content_hash(tmp_path: Path) -> None:
@@ -219,6 +237,26 @@ def test_reopening_old_schema_store_backfills_trace_snapshots_not_configs(
     assert store.get_trace_snapshot(canonical_digest(raw)) == raw_json
     # historical config hashes are unrecoverable by design -- never fabricated.
     assert store.get_config_snapshot("some-old-config-hash") is None
+
+
+def test_trace_snapshot_backfill_skips_malformed_trace_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / ".detrix" / "store.db"
+    Store(db_path)
+    valid = trace("valid")
+    valid_json = json.dumps(valid, sort_keys=True, separators=(",", ":"))
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO traces(trace_id, fetched_at, raw_json) VALUES (?, ?, ?)",
+            ("malformed", "2020-01-01T00:00:00+00:00", "{not-json"),
+        )
+        connection.execute(
+            "INSERT INTO traces(trace_id, fetched_at, raw_json) VALUES (?, ?, ?)",
+            ("valid", "2020-01-01T00:00:00+00:00", valid_json),
+        )
+
+    store = Store(db_path)
+
+    assert store.get_trace_snapshot(canonical_digest(valid)) == valid_json
 
 
 def test_push_receipts_are_config_and_score_aware(tmp_path: Path) -> None:

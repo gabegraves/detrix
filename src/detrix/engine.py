@@ -119,10 +119,7 @@ def score_trace(
         config_hash=config.content_hash,
         gate_results=[verdict.model_dump(mode="json") for verdict in verdicts],
     )
-    if verify_evidence_pointers(result, packet):
-        result.admission_decision = AdmissionDecision.QUARANTINE
-        result.consequence = ConsequenceDecision.QUARANTINE
-        result.terminal_verdict = AdmissionDecision.QUARANTINE.value
+    verify_evidence_pointers(result, packet)
     return result
 
 

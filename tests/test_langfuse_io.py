@@ -177,6 +177,7 @@ def test_push_is_idempotent_and_records_deterministic_score_ids(tmp_path: Path) 
         ],
     }
     packet = score_trace(raw, gate())
+    store.upsert_trace(raw)
     store.save_verdict(packet)
     first = FakeClient()
     assert push_scores(store, client=first) == 2
@@ -221,6 +222,7 @@ def test_boundary_error_does_not_echo_secret(
         "trace": {"id": "trace-1", "input": "", "output": "", "metadata": {}},
         "observations": [],
     }
+    store.upsert_trace(raw)
     store.save_verdict(score_trace(raw, gate()))
     with pytest.raises(LangfuseBoundaryError) as error:
         push_scores(store, client=BrokenClient())
@@ -234,6 +236,7 @@ def test_push_rejection_is_not_recorded_as_success(tmp_path: Path) -> None:
         "trace": {"id": "trace-1", "input": "", "output": "", "metadata": {}},
         "observations": [],
     }
+    store.upsert_trace(raw)
     store.save_verdict(score_trace(raw, gate()))
     client = FakeClient()
 
@@ -257,6 +260,7 @@ def test_push_refuses_stale_verdicts_before_network_call(tmp_path: Path) -> None
         "observations": [],
     }
     current = gate()
+    store.upsert_trace(raw)
     store.save_verdict(score_trace(raw, current))
     changed = GateConfig(
         failures=[

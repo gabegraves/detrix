@@ -115,6 +115,9 @@ def verify_evidence_pointers(packet: AdmissionPacket, trace: dict) -> list[str]:
 
     if failures:
         packet.joinable = False
+        packet.admission_decision = AdmissionDecision.QUARANTINE
+        packet.consequence = ConsequenceDecision.QUARANTINE
+        packet.terminal_verdict = AdmissionDecision.QUARANTINE.value
         packet.joinability = {
             **packet.joinability,
             "joinable": False,

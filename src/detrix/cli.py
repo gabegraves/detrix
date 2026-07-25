@@ -13,7 +13,7 @@ import yaml
 from pydantic import ValidationError
 
 from detrix.admission import ADMISSION_PACKET_SCHEMA_VERSION, verify_evidence_pointers
-from detrix.canonical import canonical_digest, canonical_json
+from detrix.canonical import canonical_json
 from detrix.engine import score_trace
 from detrix.failures import (
     FailureDocumentError,
@@ -283,7 +283,7 @@ def _rescue_current_config(
         return
     try:
         config = load_failures(failures_path)
-    except FailureDocumentError:
+    except (FailureDocumentError, OSError, UnicodeError):
         return
     verdict_config_hashes = {row["config_hash"] for row in rows}
     if (
@@ -315,16 +315,19 @@ def _replay_verdict(store: Store, row: dict[str, Any]) -> dict[str, Any]:
     # 1. Integrity first: any present snapshot must hash to its content-address key.
     trace_dict: dict[str, Any] | None = None
     if trace_snapshot is not None:
+        if hashlib.sha256(trace_snapshot.encode()).hexdigest() != trace_hash:
+            return outcome(STORE_INTEGRITY_VIOLATION, "trace snapshot digest mismatch")
         try:
             trace_dict = json.loads(trace_snapshot)
         except json.JSONDecodeError:
             return outcome(STORE_INTEGRITY_VIOLATION, "trace snapshot is not JSON")
-        if canonical_digest(trace_dict) != trace_hash:
-            return outcome(STORE_INTEGRITY_VIOLATION, "trace snapshot digest mismatch")
     if config_snapshot is not None and (
         hashlib.sha256(config_snapshot.encode()).hexdigest() != config_hash
     ):
         return outcome(STORE_INTEGRITY_VIOLATION, "config snapshot digest mismatch")
+
+    if version not in {1, ADMISSION_PACKET_SCHEMA_VERSION}:
+        return outcome(UNREPLAYABLE, f"unsupported schema_version {version}")
 
     # 2. Availability: a missing input is a bug post-migration, an honest LEGACY before it.
     if trace_snapshot is None or config_snapshot is None:

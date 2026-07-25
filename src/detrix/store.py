@@ -139,7 +139,10 @@ class Store:
         # trace counts get large enough to matter.
         rows = connection.execute("SELECT raw_json, fetched_at FROM traces").fetchall()
         for row in rows:
-            packet = json.loads(row["raw_json"])
+            try:
+                packet = json.loads(row["raw_json"])
+            except json.JSONDecodeError:
+                continue
             connection.execute(
                 """INSERT OR IGNORE INTO trace_snapshots(trace_hash, raw_json, first_seen_at)
                    VALUES (?, ?, ?)""",
@@ -185,6 +188,8 @@ class Store:
     def save_verdict(self, packet: AdmissionPacket) -> bool:
         serialized = packet.model_dump_json()
         trace_hash = _packet_trace_hash(packet)
+        if self.get_trace_snapshot(trace_hash) is None:
+            raise StoreError(f"no trace snapshot for verdict {packet.packet_id}")
         config_event_id = self.activate_config(packet.config_hash)
         with self._connect() as connection:
             old_row = connection.execute(

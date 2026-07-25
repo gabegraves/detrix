@@ -31,7 +31,7 @@ def _trace(trace_id: str, output: str) -> dict:
     }
 
 
-def _insert_v1_verdict(
+def _insert_verdict(
     db_path: str,
     *,
     trace_id: str,
@@ -39,7 +39,7 @@ def _insert_v1_verdict(
     trace_hash: str,
     packet: dict,
 ) -> None:
-    """Insert a hand-crafted pre-migration (schema_version 1) verdict row."""
+    """Insert a hand-crafted verdict row."""
 
     with sqlite3.connect(db_path) as connection:
         connection.execute(
@@ -328,6 +328,32 @@ def test_replay_tampered_trace_snapshot_is_integrity_violation() -> None:
         assert "DRIFT: 0" in result.output
 
 
+def test_replay_reformatted_trace_snapshot_is_integrity_violation() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("failures.yaml").write_text(REJECT_ON_OUTPUT)
+        store = Store()
+        store.upsert_trace(_trace("clean", "good"))
+        assert runner.invoke(main, ["score"]).exit_code == 0
+        trace_hash = store.list_verdicts()[0]["trace_hash"]
+        with sqlite3.connect(".detrix/store.db") as connection:
+            raw = connection.execute(
+                "SELECT raw_json FROM trace_snapshots WHERE trace_hash = ?", (trace_hash,)
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE trace_snapshots SET raw_json = ? WHERE trace_hash = ?",
+                (json.dumps(json.loads(raw), indent=2), trace_hash),
+            )
+
+        result = runner.invoke(main, ["replay"])
+
+        assert result.exit_code == 1, result.output
+        clean_line = next(
+            line for line in result.output.splitlines() if line.startswith("clean ")
+        )
+        assert clean_line.split()[2] == "STORE_INTEGRITY_VIOLATION", clean_line
+
+
 def test_replay_missing_config_snapshot_is_unreplayable() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
@@ -358,7 +384,7 @@ def test_replay_pre_migration_v1_row_without_snapshot_is_legacy() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         Store()  # create the schema; no failures.yaml -> no rescue
-        _insert_v1_verdict(
+        _insert_verdict(
             ".detrix/store.db",
             trace_id="old",
             config_hash="a" * 64,
@@ -388,7 +414,7 @@ def test_replay_rescues_current_config_for_v1_decision_comparison() -> None:
         store = Store()
         store.upsert_trace(trace)  # writes the trace snapshot
         assert store.get_config_snapshot(config_hash) is None
-        _insert_v1_verdict(
+        _insert_verdict(
             ".detrix/store.db",
             trace_id="old",
             config_hash=config_hash,
@@ -420,7 +446,7 @@ def test_replay_mixed_v1_and_v2_never_drifts_v1() -> None:
         assert runner.invoke(main, ["score"]).exit_code == 0  # v2 verdict + snapshots
         legacy_trace = _trace("v1trace", "good")
         store.upsert_trace(legacy_trace)  # trace snapshot present; config snapshot already present
-        _insert_v1_verdict(
+        _insert_verdict(
             ".detrix/store.db",
             trace_id="v1trace",
             config_hash=config_hash,
@@ -439,6 +465,57 @@ def test_replay_mixed_v1_and_v2_never_drifts_v1() -> None:
         assert v1_line.split()[2] == "LEGACY", v1_line
         assert v2_line.split()[2] == "MATCH", v2_line
         assert "DRIFT: 0" in result.output
+
+
+def test_replay_unsupported_schema_version_is_unreplayable() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("failures.yaml").write_text(REJECT_ON_OUTPUT)
+        store = Store()
+        store.upsert_trace(_trace("future", "good"))
+        assert runner.invoke(main, ["score"]).exit_code == 0
+        with sqlite3.connect(".detrix/store.db") as connection:
+            raw = connection.execute(
+                "SELECT packet_json FROM verdicts WHERE trace_id = 'future'"
+            ).fetchone()[0]
+            packet = json.loads(raw)
+            packet["schema_version"] = 3
+            connection.execute(
+                "UPDATE verdicts SET packet_json = ? WHERE trace_id = 'future'",
+                (json.dumps(packet),),
+            )
+
+        result = runner.invoke(main, ["replay"])
+
+        assert result.exit_code == 1, result.output
+        future_line = next(
+            line for line in result.output.splitlines() if line.startswith("future ")
+        )
+        assert future_line.split()[2] == "UNREPLAYABLE", future_line
+        assert "unsupported schema_version 3" in future_line
+
+
+def test_replay_ignores_binary_current_config_when_snapshots_are_complete() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path("settings").mkdir()
+        failures_path = Path("settings/failures.yaml")
+        failures_path.write_text(REJECT_ON_OUTPUT)
+        Path("detrix.yaml").write_text(
+            "failures: settings/failures.yaml\nstore: .detrix/store.db\n"
+        )
+        store = Store()
+        store.upsert_trace(_trace("clean", "good"))
+        assert runner.invoke(main, ["score"]).exit_code == 0
+        failures_path.write_bytes(b"\xff\xfe")
+
+        result = runner.invoke(main, ["replay"])
+
+        assert result.exit_code == 0, result.output
+        clean_line = next(
+            line for line in result.output.splitlines() if line.startswith("clean ")
+        )
+        assert clean_line.split()[2] == "MATCH", clean_line
 
 
 def test_replay_uses_each_verdicts_own_config_snapshot() -> None:
@@ -485,7 +562,7 @@ def test_replay_json_signals_failure_exit_code() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         Store()
-        _insert_v1_verdict(
+        _insert_verdict(
             ".detrix/store.db",
             trace_id="post",
             config_hash="a" * 64,

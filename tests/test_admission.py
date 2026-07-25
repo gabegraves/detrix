@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from detrix.admission import (
     AdmissionDecision,
+    ConsequenceDecision,
     EvidencePointer,
     ReasonCode,
     verify_evidence_pointers,
@@ -76,10 +77,14 @@ def test_scored_evidence_pointers_round_trip() -> None:
 def test_tampered_trace_digest_fails_closed() -> None:
     raw = packet()
     result = score_trace(raw, config())
+    assert result.admission_decision is AdmissionDecision.ADMIT
     raw["trace"]["output"] = "tampered"
 
     assert verify_evidence_pointers(result, raw) == ["digest_mismatch:/trace"]
     assert result.joinable is False
+    assert result.admission_decision is AdmissionDecision.QUARANTINE
+    assert result.consequence is ConsequenceDecision.QUARANTINE
+    assert result.terminal_verdict == "QUARANTINE"
     assert result.joinability["evidence_pointer_failures"] == ["digest_mismatch:/trace"]
     assert result.reason_codes.count(ReasonCode.EVIDENCE_INTEGRITY) == 1
 
