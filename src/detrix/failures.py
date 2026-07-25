@@ -9,6 +9,7 @@ import yaml
 from pydantic import ValidationError
 from yaml.tokens import AliasToken, AnchorToken
 
+from detrix.canonical import canonical_json
 from detrix.gates import GateConfig
 
 MAX_DOCUMENT_BYTES = 1_000_000
@@ -40,6 +41,18 @@ def load_failures(path: str | Path) -> GateConfig:
         raise
     except (yaml.YAMLError, ValidationError, UnicodeError) as exc:
         raise FailureDocumentError(f"{source}: invalid failure document: {exc}") from exc
+
+
+def config_snapshot_content(config: GateConfig) -> str:
+    """The exact representation GateConfig.content_hash is computed over.
+
+    Mirrors gates.py's content_hash: same payload, same canonical encoding.
+    Storing this (not the YAML source) means hash(stored content) always
+    reproduces content_hash, regardless of yaml formatting/comments.
+    """
+
+    payload = config.model_dump(mode="json", exclude={"content_hash"})
+    return canonical_json(payload)
 
 
 def write_failures(config: GateConfig, path: str | Path) -> None:

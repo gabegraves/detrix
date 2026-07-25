@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from detrix.admission import AdmissionPacket
+from detrix.canonical import canonical_digest, canonical_json
 
 EVENT_SCHEMA_VERSION = 1
 
@@ -65,6 +66,16 @@ class Store:
                     fetched_at TEXT NOT NULL,
                     raw_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS trace_snapshots (
+                    trace_hash TEXT PRIMARY KEY,
+                    raw_json TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS config_snapshots (
+                    config_hash TEXT PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    stored_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS verdicts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     trace_id TEXT NOT NULL,
@@ -111,14 +122,28 @@ class Store:
                 );
                 """
             )
+            self._backfill_trace_snapshots(connection)
         self.path.chmod(0o600)
+
+    def _backfill_trace_snapshots(self, connection: sqlite3.Connection) -> None:
+        # ponytail: re-scans all traces on every open (INSERT OR IGNORE, so cheap
+        # once caught up). Fine at this store's scale; add a backfill marker if
+        # trace counts get large enough to matter.
+        rows = connection.execute("SELECT raw_json, fetched_at FROM traces").fetchall()
+        for row in rows:
+            packet = json.loads(row["raw_json"])
+            connection.execute(
+                """INSERT OR IGNORE INTO trace_snapshots(trace_hash, raw_json, first_seen_at)
+                   VALUES (?, ?, ?)""",
+                (canonical_digest(packet), row["raw_json"], row["fetched_at"]),
+            )
 
     def upsert_trace(self, packet: dict[str, Any], fetched_at: str | None = None) -> None:
         trace = packet.get("trace")
         trace_id = trace.get("id") if isinstance(trace, dict) else None
         if not isinstance(trace_id, str) or not trace_id:
             raise StoreError("trace packet requires trace.id")
-        raw = json.dumps(packet, sort_keys=True, separators=(",", ":"))
+        raw = canonical_json(packet)
         when = fetched_at or _now()
         with self._connect() as connection:
             connection.execute(
@@ -128,6 +153,11 @@ class Store:
                      raw_json = excluded.raw_json""",
                 (trace_id, when, raw),
             )
+            connection.execute(
+                """INSERT OR IGNORE INTO trace_snapshots(trace_hash, raw_json, first_seen_at)
+                   VALUES (?, ?, ?)""",
+                (canonical_digest(packet), raw, when),
+            )
 
     def list_traces(self) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -135,6 +165,14 @@ class Store:
                 "SELECT trace_id, fetched_at, raw_json FROM traces ORDER BY trace_id"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_trace_snapshot(self, trace_hash: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT raw_json FROM trace_snapshots WHERE trace_hash = ?",
+                (trace_hash,),
+            ).fetchone()
+        return row["raw_json"] if row is not None else None
 
     def save_verdict(self, packet: AdmissionPacket) -> bool:
         serialized = packet.model_dump_json()
@@ -228,6 +266,24 @@ class Store:
                 (EVENT_SCHEMA_VERSION, event_type, config_hash, current, _now()),
             )
             return int(cursor.lastrowid)
+
+    def save_config_snapshot(self, config_hash: str, content: str) -> None:
+        """Persist the exact content a config_hash was computed over. Idempotent."""
+
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO config_snapshots(config_hash, content, stored_at)
+                   VALUES (?, ?, ?)""",
+                (config_hash, content, _now()),
+            )
+
+    def get_config_snapshot(self, config_hash: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT content FROM config_snapshots WHERE config_hash = ?",
+                (config_hash,),
+            ).fetchone()
+        return row["content"] if row is not None else None
 
     def invalidate_config(self, config_hash: str) -> None:
         """Append invalidation without deleting config or verdict history."""

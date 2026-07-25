@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+from detrix.canonical import canonical_digest
 from detrix.engine import score_trace
+from detrix.failures import config_snapshot_content
 from detrix.gates import DetectionConfig, FailureConfig, GateConfig
 from detrix.store import Store, StoreError
 
@@ -145,6 +149,76 @@ def test_interrupted_config_replay_stales_unrescored_traces(tmp_path: Path) -> N
     assert rows["trace-1"]["stale"] == 0
     assert rows["trace-2"]["config_hash"] == config_a.content_hash
     assert rows["trace-2"]["stale"] == 1
+
+
+def test_trace_snapshots_retain_every_content_version_by_hash(tmp_path: Path) -> None:
+    store = Store(tmp_path / ".detrix" / "store.db")
+    first = trace(output="v1")
+    second = trace(output="v2")
+    store.upsert_trace(first)
+    store.upsert_trace(second)
+
+    assert json.loads(store.get_trace_snapshot(canonical_digest(first)))["trace"][
+        "output"
+    ] == "v1"
+    assert json.loads(store.get_trace_snapshot(canonical_digest(second)))["trace"][
+        "output"
+    ] == "v2"
+    # latest view (`traces`) still shows only the newest content.
+    assert json.loads(store.list_traces()[0]["raw_json"])["trace"]["output"] == "v2"
+
+
+def test_trace_snapshot_upsert_is_idempotent(tmp_path: Path) -> None:
+    db_path = tmp_path / ".detrix" / "store.db"
+    store = Store(db_path)
+    store.upsert_trace(trace())
+    store.upsert_trace(trace())
+    with sqlite3.connect(db_path) as connection:
+        count = connection.execute("SELECT COUNT(*) FROM trace_snapshots").fetchone()[0]
+    assert count == 1
+
+
+def test_config_snapshot_round_trips_to_its_content_hash(tmp_path: Path) -> None:
+    store = Store(tmp_path / ".detrix" / "store.db")
+    config = gate("secret")
+    content = config_snapshot_content(config)
+
+    store.save_config_snapshot(config.content_hash, content)
+
+    stored = store.get_config_snapshot(config.content_hash)
+    assert stored == content
+    assert hashlib.sha256(stored.encode()).hexdigest() == config.content_hash
+
+    # idempotent: saving again does not raise or change the stored content.
+    store.save_config_snapshot(config.content_hash, content)
+    assert store.get_config_snapshot(config.content_hash) == content
+
+
+def test_reopening_old_schema_store_backfills_trace_snapshots_not_configs(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / ".detrix" / "store.db"
+    db_path.parent.mkdir(parents=True)
+    raw = trace()
+    raw_json = json.dumps(raw, sort_keys=True, separators=(",", ":"))
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """CREATE TABLE traces (
+                trace_id TEXT PRIMARY KEY,
+                fetched_at TEXT NOT NULL,
+                raw_json TEXT NOT NULL
+            )"""
+        )
+        connection.execute(
+            "INSERT INTO traces(trace_id, fetched_at, raw_json) VALUES (?, ?, ?)",
+            ("trace-1", "2020-01-01T00:00:00+00:00", raw_json),
+        )
+
+    store = Store(db_path)
+
+    assert store.get_trace_snapshot(canonical_digest(raw)) == raw_json
+    # historical config hashes are unrecoverable by design -- never fabricated.
+    assert store.get_config_snapshot("some-old-config-hash") is None
 
 
 def test_push_receipts_are_config_and_score_aware(tmp_path: Path) -> None:

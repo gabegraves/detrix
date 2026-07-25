@@ -12,6 +12,7 @@ import yaml
 from detrix.engine import score_trace
 from detrix.failures import (
     FailureDocumentError,
+    config_snapshot_content,
     load_failures,
     markdown_to_failures,
     write_failures,
@@ -126,6 +127,7 @@ def score() -> None:
         failures_path, store_path = _configured_paths()
         config = load_failures(failures_path)
         store = Store(store_path)
+        store.save_config_snapshot(config.content_hash, config_snapshot_content(config))
         store.activate_config(config.content_hash)
         rows = store.list_traces()
         for row in rows:
@@ -147,6 +149,7 @@ def push(context: click.Context) -> None:
         failures_path, store_path = _configured_paths()
         config = load_failures(failures_path)
         store = Store(store_path)
+        store.save_config_snapshot(config.content_hash, config_snapshot_content(config))
         store.activate_config(config.content_hash)
         count = push_scores(store, client=context.obj.get("langfuse_client"))
     except (FailureDocumentError, LangfuseBoundaryError, StoreError) as exc:
@@ -162,6 +165,7 @@ def report() -> None:
         failures_path, store_path = _configured_paths()
         config = load_failures(failures_path)
         store = Store(store_path)
+        store.save_config_snapshot(config.content_hash, config_snapshot_content(config))
         store.activate_config(config.content_hash)
         rows = store.list_verdicts(latest_only=True)
     except (FailureDocumentError, StoreError) as exc:
