@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import Any
 
 import click
 import yaml
+from pydantic import ValidationError
 
+from detrix.admission import ADMISSION_PACKET_SCHEMA_VERSION, verify_evidence_pointers
+from detrix.canonical import canonical_digest, canonical_json
 from detrix.engine import score_trace
 from detrix.failures import (
     FailureDocumentError,
@@ -20,6 +25,14 @@ from detrix.failures import (
 from detrix.gates import GateConfig
 from detrix.langfuse_io import LangfuseBoundaryError, pull_traces, push_scores
 from detrix.store import Store, StoreError
+
+MATCH = "MATCH"
+DRIFT = "DRIFT"
+STORE_INTEGRITY_VIOLATION = "STORE_INTEGRITY_VIOLATION"
+UNREPLAYABLE = "UNREPLAYABLE"
+LEGACY = "LEGACY"
+REPLAY_OUTCOMES = (MATCH, DRIFT, STORE_INTEGRITY_VIOLATION, UNREPLAYABLE, LEGACY)
+REPLAY_FAILURES = frozenset({DRIFT, STORE_INTEGRITY_VIOLATION, UNREPLAYABLE})
 
 CONFIG_EXAMPLE = """# Detrix stores environment-variable names, never secret values.
 langfuse:
@@ -203,6 +216,153 @@ def report() -> None:
     click.echo("Top offending traces")
     for hit, trace_id in sorted(offenders, key=lambda item: (-item[0], item[1]))[:5]:
         click.echo(f"  {trace_id}: {hit}")
+
+
+@main.command()
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable rows and summary.")
+@click.pass_context
+def replay(context: click.Context, as_json: bool) -> None:
+    """Recompute stored verdicts from store snapshots with an integrity-first taxonomy."""
+
+    try:
+        failures_path, store_path = _configured_paths()
+        store = Store(store_path)
+        rows = store.list_verdicts(latest_only=False)
+        _rescue_current_config(store, failures_path, rows)
+        results = [_replay_verdict(store, row) for row in rows]
+    except StoreError as exc:
+        raise click.ClickException(str(exc)) from exc
+    summary = Counter(result["outcome"] for result in results)
+    exit_code = 1 if any(result["outcome"] in REPLAY_FAILURES for result in results) else 0
+    if as_json:
+        payload = {
+            "rows": results,
+            "summary": {outcome: summary[outcome] for outcome in REPLAY_OUTCOMES}
+            | {"total": len(results)},
+            "exit_code": exit_code,
+        }
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        for result in results:
+            note = f" ({result['note']})" if result["note"] else ""
+            head = f"{result['trace_id']} {result['config_hash'][:12]} {result['outcome']}"
+            click.echo(f"{head}{note}")
+        click.echo("Replay summary")
+        for name in REPLAY_OUTCOMES:
+            click.echo(f"  {name}: {summary[name]}")
+        click.echo(f"  total: {len(results)}")
+        if summary[LEGACY]:
+            click.echo(f"WARNING: {summary[LEGACY]} legacy row(s) outside the replay guarantee")
+    if exit_code:
+        context.exit(1)
+
+
+def _rescue_current_config(
+    store: Store, failures_path: Path, rows: list[dict[str, Any]]
+) -> None:
+    """Snapshot the current config if it reconstructs an un-snapshotted verdict config.
+
+    Rescues the config-never-changed case: pre-migration verdicts have a config_hash but
+    no stored content. If the live failures.yaml still hashes to it, its content is
+    recoverable and the row becomes fully replayable. Best-effort: an absent or unreadable
+    current config simply leaves those rows LEGACY.
+    """
+
+    if not failures_path.exists():
+        return
+    try:
+        config = load_failures(failures_path)
+    except FailureDocumentError:
+        return
+    verdict_config_hashes = {row["config_hash"] for row in rows}
+    if (
+        config.content_hash in verdict_config_hashes
+        and store.get_config_snapshot(config.content_hash) is None
+    ):
+        store.save_config_snapshot(config.content_hash, config_snapshot_content(config))
+
+
+def _replay_verdict(store: Store, row: dict[str, Any]) -> dict[str, Any]:
+    stored = json.loads(row["packet_json"])
+    version = int(stored.get("schema_version", 1))
+    config_hash = row["config_hash"]
+    trace_hash = row["trace_hash"]
+
+    def outcome(name: str, note: str | None = None) -> dict[str, Any]:
+        return {
+            "verdict_id": row["id"],
+            "trace_id": row["trace_id"],
+            "config_hash": config_hash,
+            "schema_version": version,
+            "outcome": name,
+            "note": note,
+        }
+
+    trace_snapshot = store.get_trace_snapshot(trace_hash)
+    config_snapshot = store.get_config_snapshot(config_hash)
+
+    # 1. Integrity first: any present snapshot must hash to its content-address key.
+    trace_dict: dict[str, Any] | None = None
+    if trace_snapshot is not None:
+        try:
+            trace_dict = json.loads(trace_snapshot)
+        except json.JSONDecodeError:
+            return outcome(STORE_INTEGRITY_VIOLATION, "trace snapshot is not JSON")
+        if canonical_digest(trace_dict) != trace_hash:
+            return outcome(STORE_INTEGRITY_VIOLATION, "trace snapshot digest mismatch")
+    if config_snapshot is not None and (
+        hashlib.sha256(config_snapshot.encode()).hexdigest() != config_hash
+    ):
+        return outcome(STORE_INTEGRITY_VIOLATION, "config snapshot digest mismatch")
+
+    # 2. Availability: a missing input is a bug post-migration, an honest LEGACY before it.
+    if trace_snapshot is None or config_snapshot is None:
+        if version >= ADMISSION_PACKET_SCHEMA_VERSION:
+            return outcome(UNREPLAYABLE, "missing snapshot for a post-migration verdict")
+        return outcome(LEGACY, "no snapshot; pre-migration verdict")
+
+    try:
+        config = GateConfig.model_validate(json.loads(config_snapshot))
+    except (json.JSONDecodeError, ValidationError) as exc:  # unreachable once the hash matches
+        return outcome(STORE_INTEGRITY_VIOLATION, f"config snapshot unusable: {exc}")
+    if config.content_hash != config_hash:  # round-trip guard
+        return outcome(STORE_INTEGRITY_VIOLATION, "config snapshot does not reconstruct its hash")
+
+    assert trace_dict is not None  # both snapshots present here
+    recomputed = score_trace(trace_dict, config)
+    # score_trace already ran this; repeated per the hardened procedure (no-op on a clean snapshot).
+    verify_evidence_pointers(recomputed, trace_dict)
+
+    # 3 + 4. Version dispatch, then compare. Only the current engine reproduces its own bytes.
+    if version == ADMISSION_PACKET_SCHEMA_VERSION:
+        if _replay_comparable(recomputed.model_dump(mode="json")) == _replay_comparable(stored):
+            return outcome(MATCH)
+        return outcome(DRIFT, "recomputed packet differs from stored")
+    recomputed_decision = (
+        recomputed.admission_decision.value,
+        frozenset(code.value for code in recomputed.reason_codes),
+        recomputed.failure_label,
+    )
+    stored_decision = (
+        stored.get("admission_decision"),
+        frozenset(stored.get("reason_codes", [])),
+        stored.get("failure_label"),
+    )
+    note = "decision match" if recomputed_decision == stored_decision else "decision mismatch"
+    return outcome(LEGACY, note)
+
+
+def _replay_comparable(dump: dict[str, Any]) -> str:
+    # ponytail: score_trace stamps a wall-clock timestamp into every VerdictContract
+    # (gates.py, outside this unit's fence), so packets are never byte-identical across runs.
+    # Strip that clock artifact — never verdict content — from both sides before comparing;
+    # real decision/evidence drift still differs. Upgrade path: make VerdictContract.timestamp
+    # deterministic in gates.py, then delete this normalizer.
+    for key in ("verifier_verdicts", "gate_results"):
+        for entry in dump.get(key, []):
+            if isinstance(entry, dict):
+                entry.pop("timestamp", None)
+    return canonical_json(dump)
 
 
 @main.command()
