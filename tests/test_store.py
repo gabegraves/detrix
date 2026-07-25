@@ -225,7 +225,39 @@ def test_push_receipts_are_config_and_score_aware(tmp_path: Path) -> None:
     store = Store(tmp_path / ".detrix" / "store.db")
     assert store.was_pushed("trace-1", "hash-1", "raw-1", "detrix.verdict") is False
     store.record_push("trace-1", "hash-1", "raw-1", "detrix.verdict", "score-1")
+    store.record_push("trace-1", "hash-1", "raw-1", "detrix.verdict", "duplicate")
     assert store.was_pushed("trace-1", "hash-1", "raw-1", "detrix.verdict") is True
     assert store.was_pushed("trace-1", "hash-2", "raw-1", "detrix.verdict") is False
     assert store.was_pushed("trace-1", "hash-1", "raw-2", "detrix.verdict") is False
     assert store.was_pushed("trace-1", "hash-1", "raw-1", "detrix.gate.one") is False
+    receipts = store.push_receipts()
+    assert len(receipts) == 1
+    assert receipts[0]["score_id"] == "score-1"
+    assert receipts[0]["mode"] == "shadow"
+
+
+def test_reopening_store_adds_shadow_mode_to_existing_pushes_table(tmp_path: Path) -> None:
+    db_path = tmp_path / ".detrix" / "store.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE pushes (
+                trace_id TEXT NOT NULL,
+                config_hash TEXT NOT NULL,
+                trace_hash TEXT NOT NULL,
+                score_name TEXT NOT NULL,
+                score_id TEXT NOT NULL,
+                pushed_at TEXT NOT NULL,
+                PRIMARY KEY(trace_id, config_hash, trace_hash, score_name)
+            );
+            INSERT INTO pushes
+                (trace_id, config_hash, trace_hash, score_name, score_id, pushed_at)
+            VALUES
+                ('trace-1', 'hash-1', 'raw-1', 'detrix.verdict', 'score-1', '2026-01-01');
+            """
+        )
+
+    store = Store(db_path)
+
+    assert store.push_receipts()[0]["mode"] == "shadow"

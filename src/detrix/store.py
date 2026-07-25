@@ -118,10 +118,18 @@ class Store:
                     score_name TEXT NOT NULL,
                     score_id TEXT NOT NULL,
                     pushed_at TEXT NOT NULL,
+                    mode TEXT NOT NULL DEFAULT 'shadow',
                     PRIMARY KEY(trace_id, config_hash, trace_hash, score_name)
                 );
                 """
             )
+            push_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(pushes)").fetchall()
+            }
+            if "mode" not in push_columns:
+                connection.execute(
+                    "ALTER TABLE pushes ADD COLUMN mode TEXT NOT NULL DEFAULT 'shadow'"
+                )
             self._backfill_trace_snapshots(connection)
         self.path.chmod(0o600)
 
@@ -404,15 +412,15 @@ class Store:
         with self._connect() as connection:
             connection.execute(
                 """INSERT OR IGNORE INTO pushes
-                   (trace_id, config_hash, trace_hash, score_name, score_id, pushed_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   (trace_id, config_hash, trace_hash, score_name, score_id, pushed_at, mode)
+                   VALUES (?, ?, ?, ?, ?, ?, 'shadow')""",
                 (trace_id, config_hash, trace_hash, score_name, score_id, _now()),
             )
 
     def push_receipts(self) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                """SELECT trace_id, config_hash, trace_hash, score_name, score_id, pushed_at
+                """SELECT trace_id, config_hash, trace_hash, score_name, score_id, pushed_at, mode
                    FROM pushes ORDER BY trace_id, score_name"""
             ).fetchall()
         return [dict(row) for row in rows]

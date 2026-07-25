@@ -45,6 +45,10 @@ detrix report
 detrix push
 ```
 
+The efficacy ladder is would-have-rejected → issued → obeyed → outcome-measured. Detrix operates
+at the first rung: scoring and reports describe post-hoc decisions, not verified enforcement or
+measured outcomes.
+
 Use filters when you want a narrower replay set:
 
 ```bash

@@ -145,10 +145,16 @@ def test_score_and_report_use_real_sqlite_store() -> None:
         assert "bad REJECT" in score_result.output
         report_result = runner.invoke(main, ["report"])
         assert report_result.exit_code == 0, report_result.output
+        assert report_result.output.splitlines()[0] == (
+            "Shadow mode: post-hoc scoring only - decisions below are what WOULD have "
+            "been applied; no consumer enforcement is verified."
+        )
+        assert "Would-have verdict counts" in report_result.output
         assert "ADMIT: 1" in report_result.output
         assert "REJECT: 1" in report_result.output
         assert "bad-output: 1/2 (50.0%)" in report_result.output
         assert "bad: 1" in report_result.output
+        assert "prevented" not in report_result.output.lower()
 
 
 def test_commands_honor_configured_failure_and_store_paths() -> None:

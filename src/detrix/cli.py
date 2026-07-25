@@ -191,7 +191,11 @@ def report() -> None:
             packet["reason_codes"] = sorted({*packet["reason_codes"], "REPLAY_REQUIRED"})
         packets.append(packet)
     counts = Counter(packet["admission_decision"] for packet in packets)
-    click.echo("Verdicts")
+    click.echo(
+        "Shadow mode: post-hoc scoring only - decisions below are what WOULD have been "
+        "applied; no consumer enforcement is verified."
+    )
+    click.echo("Would-have verdict counts")
     for decision in ("ADMIT", "REJECT", "SUPPORT_ONLY", "QUARANTINE"):
         click.echo(f"  {decision}: {counts[decision]}")
     hits: dict[str, list[int]] = defaultdict(lambda: [0, 0])
