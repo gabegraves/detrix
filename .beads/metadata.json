@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "detrix",
-  "project_id": "6bf87b77-1c52-4f64-ad58-f78d9715c1c8"
-}

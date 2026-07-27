@@ -17,3 +17,10 @@ dist/
 .omc/
 .omx/
 .deploy-evidence/
+
+# agent/session infrastructure — never published
+.beads/
+.claude/
+.compound-engineering/
+docs/plans/
+CLAUDE.md.local-backup

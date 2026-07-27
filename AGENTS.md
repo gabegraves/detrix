@@ -1,84 +1,50 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
+Instructions for AI coding agents working on this repository. Human contributors
+should read `README.md` first.
 
-## Quick Reference
+## What this project is
 
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
-```
+Detrix scores completed AI-agent traces against deterministic, user-authored rules
+and records admission verdicts that can be independently re-derived. It is post-hoc:
+it does not wrap, intercept, or constrain a running agent.
 
-## Non-Interactive Shell Commands
+Read `docs/concepts.md` for the vocabulary (admission, gate, verdict, evidence
+pointer, replay, shadow mode) before changing behavior.
 
-**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
-
-Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
-
-**Use these forms instead:**
-```bash
-# Force overwrite without prompting
-cp -f source dest           # NOT: cp source dest
-mv -f source dest           # NOT: mv source dest
-rm -f file                  # NOT: rm file
-
-# For recursive operations
-rm -rf directory            # NOT: rm -r directory
-cp -rf source dest          # NOT: cp -r source dest
-```
-
-**Other commands that may prompt:**
-- `scp` - use `-o BatchMode=yes` for non-interactive
-- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
-- `apt-get` - use `-y` flag
-- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
-
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
-## Beads Issue Tracker
-
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
+## Build & test
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
+uv sync                 # install deps (never pip)
+uv run pytest           # full suite
+uv run ruff check .     # lint (line-length 100)
+uv run detrix demo      # offline three-trace proof; no network or credentials
 ```
 
-### Rules
+`uv run detrix demo` is the fastest end-to-end check that a change did not break the
+core path. It must print one ADMIT, one REJECT, and one QUARANTINE.
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+## Conventions
 
-## Session Completion
+- Click for the CLI, Pydantic v2 for data models, pytest for tests.
+- Deterministic first: a rule decidable from structure or content is code, never a
+  model call.
+- Fail closed. An unresolvable evidence pointer, a digest mismatch, or a missing
+  snapshot quarantines the row — it never silently passes.
+- Stored rows are versioned and dispatched per row. Never break or retroactively
+  re-label an existing `schema_version`; add a new one and dispatch on it.
+- Verdict language stays inside what post-hoc scoring proves. Results are shadow mode
+  ("would have been rejected"), and the report states its coverage boundary.
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+## Non-interactive shell commands
 
-**MANDATORY WORKFLOW:**
+Always use non-interactive flags — `cp`, `mv`, and `rm` are aliased to `-i` on some
+systems and will hang an agent waiting for input.
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd dolt push
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
+```bash
+cp -f source dest
+mv -f source dest
+rm -rf directory
+```
 
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
-<!-- END BEADS INTEGRATION -->
+Also: `ssh`/`scp` need `-o BatchMode=yes`, `apt-get` needs `-y`.
