@@ -16,9 +16,3 @@
   `expand_metadata` and their expansion provenance is stored with the packet.
 - Push: synchronous public `client.api.ingestion.batch(...)` with deterministic score/event ids;
   local receipts are written only for response successes.
-
-## Environment blockers
-
-- The session exposes repository files as writable but mounts `.git` read-only. Every attempted
-  local commit fails while creating `.git/index.lock`; repository history cannot be written from
-  this environment.
